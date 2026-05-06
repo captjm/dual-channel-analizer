@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title><!DOCTYPE html>
+        <html lang="ka">
+        <head>
+        <meta charset="UTF-8">
+        <title>ქუჩის ხმაურის ანალიზატორი</title>
+    <script src="https://unpkg.com/meyda/dist/web/meyda.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        h1 { color: #58a6ff; margin-bottom: 5px; }
+        .description { margin-bottom: 20px; font-size: 0.9em; color: #8b9eb0; }
+
+        .controls { background: #161b22; padding: 20px; border-radius: 8px; border: 1px solid #30363d; margin-bottom: 20px; width: 100%; max-width: 1200px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; justify-content: center; }
+
+        button { padding: 12px 25px; font-size: 14px; font-weight: bold; cursor: pointer; border-radius: 6px; border: none; transition: 0.2s; }
+        .btn-mic { background: #238636; color: white; }
+        .btn-file { background: #1f6feb; color: white; }
+        button:hover { opacity: 0.8; transform: scale(1.02); }
+        button:disabled { background: #484f58; cursor: not-allowed; }
+
+        .matrix { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; width: 100%; max-width: 1200px; margin-bottom: 20px; }
+        .charts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; width: 100%; max-width: 1200px; }
+
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; }
+        .chart-container { height: 180px; position: relative; }
+
+        h2 { font-size: 0.85em; color: #8b9eb0; border-bottom: 1px solid #30363d; padding-bottom: 8px; margin-top: 0; text-transform: uppercase; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+        th, td { padding: 6px 4px; border-bottom: 1px solid #21262d; text-align: right; }
+        th { text-align: left; color: #8b9eb0; }
+        .val-l { color: #3fb950; font-family: monospace; font-size: 1.1em; }
+        .val-r { color: #f85149; font-family: monospace; font-size: 1.1em; }
+    </style>
+</head>
+<body>
+
+<h1>ქუჩის ხმაურის ანალიზატორი</h1>
+<div class="description">ხმის მახასიათებლების დინამიური მონიტორინგი (DSP)</div>
+
+<div class="controls">
+    <button id="micBtn" class="btn-mic">ჩართე მიკროფონი</button>
+    <div style="border-left: 1px solid #30363d; height: 30px; margin: 0 10px;"></div>
+    <input type="file" id="fileInput" accept="audio/*">
+    <audio id="audioPlayer" controls></audio>
+    <button id="fileBtn" class="btn-file">ფაილის ანალიზი</button>
+</div>
+
+<!-- ციფრული მონაცემები -->
+<div class="matrix">
+    <div class="card">
+        <h2>ამპლიტუდა და პანორამა</h2>
+        <table>
+            <tr><th>პარამეტრი</th><th style="text-align:right">მარცხენა (L)</th><th style="text-align:right">მარჯვენა (R)</th></tr>
+            <tr><td>RMS (სიმძლავრე)</td><td class="val-l" id="rms-0">0.00</td><td class="val-r" id="rms-1">0.00</td></tr>
+            <tr><td>ZCR (ხმაურიანობა)</td><td class="val-l" id="zcr-0">0</td><td class="val-r" id="zcr-1">0</td></tr>
+            <tr><td>პანორამა (L <-> R)</td><td colspan="2" style="text-align:center; color:#e3b341;" id="spatial-pan">0.00</td></tr>
+        </table>
+    </div>
+    <div class="card">
+        <h2>სპექტრული მონაცემები</h2>
+        <table>
+            <tr><th>პარამეტრი</th><th style="text-align:right">მარცხენა (L)</th><th style="text-align:right">მარჯვენა (R)</th></tr>
+            <tr><td>Centroid (სიკაშკაშე)</td><td class="val-l" id="centroid-0">0</td><td class="val-r" id="centroid-1">0</td></tr>
+            <tr><td>Rolloff (მასა)</td><td class="val-l" id="rolloff-0">0</td><td class="val-r" id="rolloff-1">0</td></tr>
+            <tr><td>Flatness (სიბრტყე)</td><td class="val-l" id="flatness-0">0.00</td><td class="val-r" id="flatness-1">0.00</td></tr>
+        </table>
+    </div>
+</div>
+
+<!-- გრაფიკების ბადე -->
+<div class="charts-grid" id="chartsContainer"></div>
+
+<script>
+    let audioContext, sourceNode, splitter;
+    let latestData = [{}, {}];
+    const charts = {};
+
+    // გრაფიკების კონფიგურაცია
+    const configs = [
+        { id: 'rms', title: 'RMS (სიმძლავრე)', key: 'rms' },
+        { id: 'centroid', title: 'Centroid (სიკაშკაშე)', key: 'spectralCentroid' },
+        { id: 'zcr', title: 'ZCR (მექანიკური ხმაური)', key: 'zcr' },
+        { id: 'flatness', title: 'Flatness (სიბრტყე)', key: 'spectralFlatness' },
+        { id: 'rolloff', title: 'Rolloff (სპექტრის ზღვარი)', key: 'spectralRolloff' },
+        { id: 'energy', title: 'Energy (ენერგია)', key: 'energy' }
+    ];
+
+    // გრაფიკების ინიციალიზაცია
+    const MAX_POINTS = 50;
+    configs.forEach(conf => {
+        const container = document.getElementById('chartsContainer');
+        const card = document.createElement('div');
+        card.className = 'card chart-container';
+        card.innerHTML = `<h2>${conf.title}</h2><canvas id="c-${conf.id}"></canvas>`;
+        container.appendChild(card);
+
+        charts[conf.id] = new Chart(document.getElementById(`c-${conf.id}`), {
+            type: 'line',
+            data: {
+                labels: Array(MAX_POINTS).fill(''),
+                datasets: [
+                    { data: Array(MAX_POINTS).fill(0), borderColor: '#3fb950', borderWidth: 2, pointRadius: 0 },
+                    { data: Array(MAX_POINTS).fill(0), borderColor: '#f85149', borderWidth: 2, pointRadius: 0 }
+                ]
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { x: { display: false }, y: { grid: { color: '#21262d' }, ticks: { color: '#8b9eb0' } } },
+                plugins: { legend: { display: false } }
+            }
+        });
+    });
+
+    // ანალიზის ფუნქცია
+    async function startAnalysis(type) {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        await audioContext.resume();
+
+        if (sourceNode) sourceNode.disconnect();
+
+        try {
+            if (type === 'mic') {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+                sourceNode = audioContext.createMediaStreamSource(stream);
+            } else {
+                const player = document.getElementById('audioPlayer');
+                if (!player.src) return alert("გთხოვთ აირჩიოთ ფაილი!");
+                if (!window.playerSource) {
+                    window.playerSource = audioContext.createMediaElementSource(player);
+                }
+                sourceNode = window.playerSource;
+                sourceNode.connect(audioContext.destination);
+                player.play();
+            }
+
+            splitter = audioContext.createChannelSplitter(2);
+            sourceNode.connect(splitter);
+
+            const features = ['rms', 'spectralCentroid', 'spectralFlatness', 'zcr', 'spectralRolloff', 'energy'];
+
+            for (let i = 0; i < 2; i++) {
+                const analyzer = Meyda.createMeydaAnalyzer({
+                    audioContext, source: splitter, channel: i, bufferSize: 2048,
+                    featureExtractors: features,
+                    callback: (f) => { if(f) latestData[i] = f; }
+                });
+                analyzer.start();
+            }
+
+            setInterval(updateUI, 50);
+            document.getElementById('micBtn').disabled = true;
+            document.getElementById('fileBtn').disabled = true;
+
+        } catch (err) {
+            console.error(err);
+            alert("შეცდომა: " + err.message);
+        }
+    }
+
+    function updateUI() {
+        if (!latestData[0].rms && !latestData[1].rms) return;
+
+        // ციფრების განახლება
+        for (let i = 0; i < 2; i++) {
+            const d = latestData[i];
+            if(!d.rms) continue;
+            document.getElementById(`rms-${i}`).innerText = d.rms.toFixed(4);
+            document.getElementById(`zcr-${i}`).innerText = Math.round(d.zcr);
+            document.getElementById(`centroid-${i}`).innerText = Math.round(d.spectralCentroid);
+            document.getElementById(`rolloff-${i}`).innerText = Math.round(d.spectralRolloff);
+            document.getElementById(`flatness-${i}`).innerText = d.spectralFlatness.toFixed(4);
+        }
+
+        // პანორამა
+        const pan = (latestData[1].rms - latestData[0].rms) / (latestData[0].rms + latestData[1].rms || 1);
+        document.getElementById('spatial-pan').innerText = pan.toFixed(3);
+
+        // გრაფიკების განახლება
+        configs.forEach(conf => {
+            const chart = charts[conf.id];
+            chart.data.datasets[0].data.push(latestData[0][conf.key] || 0);
+            chart.data.datasets[0].data.shift();
+            chart.data.datasets[1].data.push(latestData[1][conf.key] || 0);
+            chart.data.datasets[1].data.shift();
+            chart.update();
+        });
+    }
+
+    // ფაილის ატვირთვა
+    document.getElementById('fileInput').onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            document.getElementById('audioPlayer').src = URL.createObjectURL(file);
+        }
+    };
+
+    document.getElementById('micBtn').onclick = () => startAnalysis('mic');
+    document.getElementById('fileBtn').onclick = () => startAnalysis('file');
+
+</script>
+</body>
+</html></title>
+</head>
+<body>
+
+</body>
+</html>
